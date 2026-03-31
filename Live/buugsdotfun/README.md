@@ -1,5 +1,7 @@
 # @buugsdotfun — Wallet Drop Bypass
 
+**X:** [https://x.com/buugsdotfun](https://x.com/buugsdotfun)
+
 Hex grid puzzle game. After winning, a wallet submission modal appears with social tasks checkbox. The checkbox is client-side only, and the Supabase RPC function accepts wallets directly.
 
 **Bypass:** Calls `submit_wallet_submission` RPC directly — no game, no social tasks.

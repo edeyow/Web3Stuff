@@ -1,5 +1,7 @@
 # @tmm_eth — Take My Muffin Bulk Register
 
+**X:** [https://x.com/tmm_eth](https://x.com/tmm_eth)
+
 Bracket-style tournament quiz + social tasks. Full automation: SIWE wallet auth → tournament completion → AdFather task completion.
 
 **What it automates:**

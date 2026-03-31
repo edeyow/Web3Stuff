@@ -1,5 +1,7 @@
 # Harmony — Auto-Caller for WL
 
+**X:** Project uses Twilio WebRTC — no public X account identified
+
 Twilio WebRTC phone call automation for an NFT whitelist disguised as a fake pharma support line. Navigates the phone menu and enters your number automatically.
 
 **Requires a real browser** (WebRTC needs audio stack). Cannot run headless.

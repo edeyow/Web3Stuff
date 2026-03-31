@@ -1,5 +1,7 @@
 # @ethernalfluffs — Waitlist Register
 
+**X:** [https://x.com/ethernalfluffs](https://x.com/ethernalfluffs)
+
 NFT/token waitlist with $ETF points. Social tasks (follow + RT) are client-side only — no Twitter API verification.
 
 **Bypass:** Calls `/api/waitlist/register` directly with `followDone: true, retweetDone: true`. Turnstile CAPTCHA solves automatically in a real browser.

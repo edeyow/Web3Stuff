@@ -1,5 +1,7 @@
 # @getmarkit — Waitlist Register + Site Monitor
 
+**X:** [https://x.com/getmarkit](https://x.com/getmarkit)
+
 555 NFT collection waitlist. Originally had zero Supabase RLS (direct API inserts). They've since upgraded security — monitor watches for form re-opening.
 
 ## Scripts
