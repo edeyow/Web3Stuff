@@ -1,0 +1,14 @@
+{
+  "name": "taos-minter",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "mint": "node mint.js",
+    "test": "MINT_COUNT=1 node mint.js"
+  },
+  "dependencies": {
+    "@polkadot/api": "^15.0.0",
+    "dotenv": "^16.0.0"
+  }
+}
