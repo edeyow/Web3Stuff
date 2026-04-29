@@ -1,5 +1,5 @@
 // ============================================================
-// CAMEL Phase 1 WL Mint Script — Multi-wallet, Auto-fetch tier
+// CAMEL Phase 1 WL Mint Script — Multi-wallet, Parallel, Auto-fetch
 // ============================================================
 // 1. npm install
 // 2. Fill in RPC_URL and PRIVATE_KEYS in config.ts
@@ -7,8 +7,6 @@
 // ============================================================
 
 import { ethers } from "ethers";
-import * as fs from "fs";
-import * as path from "path";
 import { CONFIG } from "./config";
 
 const CAMEL_ABI = [
@@ -30,90 +28,73 @@ interface TierData {
 async function fetchTierData(): Promise<TierData> {
   console.log("🌐 Fetching tier data from camelcabal.fun...");
 
-  // First, get the JS bundle to find the current tier file hashes
-  const bundleUrl = `${CONFIG.TIER_FETCH_URL.startsWith("https") ? "" : "https://camelcabal.fun"}/assets/index-8254a56c.js`;
-  console.log("  Fetching bundle to locate tier file hashes...");
+  const bundleUrl = "https://camelcabal.fun/assets/index-8254a56c.js";
+  let bundleText = "";
 
-  let bundleText: string;
   try {
-    const response = await fetch(bundleUrl);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    bundleText = await response.text();
-  } catch (err: any) {
-    // Try alternate approach: just try known file patterns directly
-    console.log("   Bundle fetch failed, trying direct tier file URLs...");
-    bundleText = "";
+    const res = await fetch(bundleUrl);
+    if (res.ok) bundleText = await res.text();
+  } catch {}
+
+  // Find tier file names in bundle
+  const tierFiles: string[] = [];
+  const tierMatches = bundleText.matchAll(/camel-tier-(\d)-([a-f0-9]{8})\.js/g);
+  for (const m of tierMatches) {
+    tierFiles.push(`camel-tier-${m[1]}-${m[2]}.js`);
   }
 
-  // Try to find tier file names in bundle
-  const tierMatch = bundleText.match(/camel-tier-(\d)-([a-f0-9]{8})\.js/);
-  const tierFile = tierMatch
-    ? `camel-tier-${tierMatch[1]}-${tierMatch[2]}.js`
-    : null;
+  const candidates: string[] = [
+    ...tierFiles.map((f) => `https://camelcabal.fun/data/${f}`),
+    "https://camelcabal.fun/data/camel-tier-0-20691f5a.js",
+    "https://camelcabal.fun/data/camel-tier-1-15e48e54.js",
+  ];
 
-  // Try multiple possible URLs
-  const candidates = tierFile
-    ? [
-        `https://camelcabal.fun/data/${tierFile}`,
-        `https://camelcabal.fun/${tierFile}`,
-      ]
-    : [
-        // Fallback patterns until tier data drops
-        `https://camelcabal.fun/data/camel-tier-0-20691f5a.js`,
-        `https://camelcabal.fun/data/camel-tier-1-15e48e54.js`,
-      ];
-
-  let lastError: Error | null = null;
+  let lastError = "";
   for (const url of candidates) {
     try {
-      console.log(`   Trying: ${url}`);
+      console.log(`   Trying: ${url.split("/").pop()}`);
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
       const text = await res.text();
 
-      // Extract from JS module format: export const merkleRoot = "0x..."
-      // or: const merkleRoot = "0x..."
-      const merkleMatch = text.match(/merkleRoot\s*=\s*"0x[a-fA-F0-9]{64}"/);
-      const addressesMatch = text.match(/whitelistAddresses\s*=\s*\[([^\]]+)\]/);
+      // Extract merkleRoot — supports: merkleRoot = "0x...", export const merkleRoot = "0x..."
+      const merkleMatch = text.match(/merkleRoot\s*=\s*"0x([a-fA-F0-9]{64})"/);
+      const addressesMatch = text.match(/whitelistAddresses\s*=\s*\[([\s\S]*?)\]/);
 
-      if (!merkleMatch) throw new Error("Could not find merkleRoot in tier file");
-      if (!addressesMatch) throw new Error("Could not find whitelistAddresses in tier file");
+      if (!merkleMatch) throw new Error("merkleRoot not found");
+      if (!addressesMatch) throw new Error("whitelistAddresses not found");
 
-      const merkleRoot = merkleMatch[0].match(/"0x[a-fA-F0-9]{64}"/)?.[0]?.replace(/"/g, "") || "";
+      const merkleRoot = "0x" + merkleMatch[1];
 
-      // Parse addresses — they might be in various formats
-      const addrStr = addressesMatch[1];
+      // Parse addresses — supports: "0x...", '0x...'
+      const addrRegex = /["']0x([a-fA-F0-9]{40})["']/g;
       const addresses: string[] = [];
-      const addrRegex = /"0x[a-fA-F0-9]{40}"/g;
       let m;
-      while ((m = addrRegex.exec(addrStr)) !== null) {
-        addresses.push(m[0].replace(/"/g, "").toLowerCase());
+      while ((m = addrRegex.exec(addressesMatch[1])) !== null) {
+        addresses.push("0x" + m[1].toLowerCase());
       }
 
-      if (addresses.length === 0) {
-        throw new Error("No addresses parsed from whitelistAddresses");
-      }
+      if (addresses.length === 0) throw new Error("No addresses parsed");
 
       console.log(`   ✅ Found ${addresses.length} WL addresses`);
-      console.log(`   ✅ Merkle root: ${merkleRoot.slice(0, 18)}...`);
-
+      console.log(`   ✅ Root: ${merkleRoot.slice(0, 18)}...`);
       return { merkleRoot, whitelistAddresses: addresses };
     } catch (err: any) {
-      lastError = err;
+      lastError = err.message;
       continue;
     }
   }
 
   throw new Error(
-    `Tier data not available yet. The whitelist hasn't been published.\n` +
-    `   Last error: ${lastError?.message}\n` +
-    `   Check https://camelcabal.fun for the tier data drop.`
+    `Tier data not available (all URLs returned 404).\n` +
+    `   The whitelist hasn't been published yet.\n` +
+    `   Check https://camelcabal.fun for updates.`
   );
 }
 
 // ============================================================
-// Merkle Tree — handles uneven trees (power-of-2 padding)
+// Merkle Proof Builder
 // ============================================================
 function bufferToHex(buf: Buffer): string {
   return "0x" + buf.toString("hex");
@@ -129,29 +110,32 @@ function buildMerkleProof(
     throw new Error(`Address ${addr} not in whitelist`);
   }
 
-  // Build layers
   type Node = { hash: Buffer; left?: Node; right?: Node };
+
+  // Build leaves
   const leaves: Node[] = sortedAddresses.map((a) => ({
-    hash: Buffer.from(ethers.keccak256(Buffer.from(a.slice(2), "hex")).slice(2), "hex"),
+    hash: Buffer.from(
+      ethers.keccak256(Buffer.from(a.slice(2), "hex")).slice(2),
+      "hex"
+    ),
   }));
 
-  // Pad to power of 2
+  // Pad to power of 2 (required for complete binary tree)
   let size = 1;
   while (size < leaves.length) size *= 2;
-
-  // Pad last leaf for uneven trees
   while (leaves.length < size) {
+    // Pad with last leaf for uneven trees (standard merkle padding)
     leaves.push({ hash: leaves[leaves.length - 1].hash });
   }
 
+  // Build tree bottom-up
   const layers: Node[][] = [leaves];
-
   while (layers[layers.length - 1].length > 1) {
     const prev = layers[layers.length - 1];
     const next: Node[] = [];
     for (let i = 0; i < prev.length; i += 2) {
       const left = prev[i];
-      const right = prev[i + 1] || { hash: prev[i].hash }; // pad with self for uneven
+      const right = prev[i + 1] ?? { hash: left.hash };
       const concat = Buffer.concat(
         [left.hash, right.hash].sort((a, b) => a.compare(b))
       );
@@ -167,18 +151,14 @@ function buildMerkleProof(
     layers.push(next);
   }
 
-  const root = layers[layers.length - 1][0];
-
-  // Generate proof for our slot
+  // Trace from leaf to root collecting siblings
   let current: Node | undefined = leaves[slot];
   const proof: Buffer[] = [];
 
   while (current?.parent) {
     const isRight = current.parent.right === current;
     const sibling = isRight ? current.parent.left : current.parent.right;
-    if (sibling) {
-      proof.push(sibling.hash);
-    }
+    if (sibling) proof.push(sibling.hash);
     current = current.parent;
   }
 
@@ -189,80 +169,96 @@ function buildMerkleProof(
 }
 
 // ============================================================
-// Per-wallet mint
+// Gas helper
+// ============================================================
+interface GasSettings {
+  maxFeePerGas: bigint | null;
+  maxPriorityFeePerGas: bigint | null;
+  gasLimit: number;
+}
+
+async function getGasSettings(
+  provider: ethers.JsonRpcProvider
+): Promise<GasSettings> {
+  const limit = CONFIG.GAS_LIMIT;
+
+  if (CONFIG.MAX_FEE_PER_GAS !== null && CONFIG.MAX_PRIORITY_FEE_PER_GAS !== null) {
+    const f = BigInt(CONFIG.MAX_FEE_PER_GAS) * BigInt(1e9);
+    const p = BigInt(CONFIG.MAX_PRIORITY_FEE_PER_GAS) * BigInt(1e9);
+    console.log(`   ⛽ Using manual gas: maxFee=${CONFIG.MAX_FEE_PER_GAS} gwei, priorityFee=${CONFIG.MAX_PRIORITY_FEE_PER_GAS} gwei`);
+    return { maxFeePerGas: f, maxPriorityFeePerGas: p, gasLimit: limit };
+  }
+
+  // Auto mode
+  const feeData = await provider.getFeeData();
+  const maxFee = feeData.maxFeePerGas ?? (await provider.getGasPrice());
+  const maxPri = feeData.maxPriorityFeePerGas ?? BigInt(1e9);
+
+  const maxFeeGwei = Number(maxFee / BigInt(1e9));
+  const maxPriGwei = Number(maxPri / BigInt(1e9));
+  console.log(`   ⛽ Using auto gas: maxFee=${maxFeeGwei} gwei, priorityFee=${maxPriGwei} gwei`);
+
+  return { maxFeePerGas: maxFee, maxPriorityFeePerGas: maxPri, gasLimit: limit };
+}
+
+// ============================================================
+// Per-wallet mint (runs in parallel)
 // ============================================================
 async function mintForWallet(
   wallet: ethers.Wallet,
   tierData: TierData,
-  camel: ethers.Contract
-): Promise<{ success: boolean; reason?: string }> {
+  camel: ethers.Contract,
+  gasSettings: GasSettings
+): Promise<{ address: string; success: boolean; reason?: string; txHash?: string }> {
   const address = wallet.address.toLowerCase();
+  const short = address.slice(0, 6) + "..." + address.slice(-4);
 
-  console.log(`\n${"=".repeat(50)}`);
-  console.log(`📪 Wallet: ${address}`);
-  console.log("=".repeat(50));
-
-  // 1. Check if already claimed
   try {
+    // 1. Check claimed
     const hasClaimed = await camel.claimed(address);
     if (hasClaimed) {
-      console.log("   ⏭️  Already claimed. Skipping.");
-      return { success: true, reason: "already_claimed" };
+      return { address, success: true, reason: "already_claimed" };
     }
-  } catch (err: any) {
-    return { success: false, reason: `claimed() call failed: ${err.message}` };
-  }
 
-  // 2. Check if WL mint is live
-  let mintLive = false;
-  try {
-    mintLive = await camel.whitelistMintLive();
+    // 2. Check WL mint live
+    const mintLive = await camel.whitelistMintLive();
     if (!mintLive) {
-      console.log("   ⏳ Whitelist mint not live yet. Check back at tier1OpensAt.");
-      return { success: false, reason: "mint_not_live" };
+      return { address, success: false, reason: "mint_not_live" };
     }
-    console.log("   ✅ WL mint is LIVE");
-  } catch (err: any) {
-    return { success: false, reason: `whitelistMintLive() failed: ${err.message}` };
-  }
 
-  // 3. Build Merkle proof
-  let proofData: { proof: string[]; slot: number };
-  try {
-    proofData = buildMerkleProof(address, tierData.whitelistAddresses);
-    console.log(`   ✅ Slot: ${proofData.slot}`);
-    console.log(`   ✅ Proof nodes: ${proofData.proof.length}`);
-  } catch (err: any) {
-    if (err.message.includes("not in whitelist")) {
-      console.log("   ❌ NOT on whitelist. Skipping.");
-      return { success: false, reason: "not_whitelisted" };
+    // 3. Build Merkle proof
+    const { proof, slot } = buildMerkleProof(address, tierData.whitelistAddresses);
+
+    // 4. Send mint tx with custom gas
+    const overrides: ethers.TransactionRequest = {
+      gasLimit: BigInt(gasSettings.gasLimit),
+    };
+    if (gasSettings.maxFeePerGas !== null) {
+      overrides.maxFeePerGas = gasSettings.maxFeePerGas;
     }
-    return { success: false, reason: `Merkle proof failed: ${err.message}` };
-  }
+    if (gasSettings.maxPriorityFeePerGas !== null) {
+      overrides.maxPriorityFeePerGas = gasSettings.maxPriorityFeePerGas;
+    }
 
-  // 4. Send mint tx
-  console.log("   📡 Sending whitelistMint transaction...");
-  try {
-    const tx = await camel.whitelistMint(proofData.proof, proofData.slot, {
-      gasLimit: CONFIG.GAS_LIMIT,
-    });
-    console.log(`   ⏳ Tx: ${tx.hash}`);
-    console.log(`   ⏳ Waiting for confirmation...`);
+    const tx = await (camel.connect(wallet) as any).whitelistMint(
+      proof,
+      slot,
+      overrides
+    );
 
     const receipt = await tx.wait();
 
     if (receipt?.status === 1) {
-      const newBalance = await camel.balanceOf(address);
-      console.log(`   ✅ SUCCESS!`);
-      console.log(`   New CAMEL balance: ${ethers.formatUnits(newBalance, 18)}`);
-      return { success: true };
+      return { address, success: true, txHash: tx.hash };
     } else {
-      return { success: false, reason: "tx_failed" };
+      return { address, success: false, reason: "tx_failed" };
     }
   } catch (err: any) {
     const reason = err.reason || err.message || String(err);
-    console.log(`   ❌ Mint failed: ${reason}`);
-    return { success: false, reason };
+    if (reason.includes("not in whitelist")) {
+      return { address, success: false, reason: "not_whitelisted" };
+    }
+    return { address, success: false, reason: reason.slice(0, 120) };
   }
 }
 
@@ -270,43 +266,36 @@ async function mintForWallet(
 // Main
 // ============================================================
 async function main() {
-  console.log("\n🐪 CAMEL Phase 1 WL Mint — Multi-Wallet");
-  console.log("========================================\n");
+  console.log("\n🐪 CAMEL Phase 1 WL Mint — Parallel Multi-Wallet");
+  console.log("================================================\n");
 
   // Validate config
   if (!CONFIG.RPC_URL || CONFIG.RPC_URL.includes("YOUR_ALCHEMY_KEY")) {
     console.error("❌  CONFIG.RPC_URL not set in config.ts");
     process.exit(1);
   }
-
   if (!CONFIG.PRIVATE_KEYS || CONFIG.PRIVATE_KEYS.length === 0) {
-    console.error("❌  No PRIVATE_KEYS set in config.ts");
+    console.error("❌  No PRIVATE_KEYS in config.ts");
+    process.exit(1);
+  }
+  if (CONFIG.PRIVATE_KEYS.some((k) => k.includes("_private_key"))) {
+    console.error("❌  Replace placeholder private keys in config.ts");
     process.exit(1);
   }
 
-  if (CONFIG.PRIVATE_KEYS.some((k) => k === "0x_your_private_key_1")) {
-    console.error("❌  Replace the placeholder private key in config.ts");
-    process.exit(1);
-  }
-
-  // Init provider
+  // Init provider + derive wallets
   const provider = new ethers.JsonRpcProvider(CONFIG.RPC_URL);
 
-  // Derive addresses first
-  console.log("🔑 Derived addresses:");
+  console.log("🔑 Wallets:");
   const wallets: ethers.Wallet[] = [];
   for (const pk of CONFIG.PRIVATE_KEYS) {
-    try {
-      const w = new ethers.Wallet(pk, provider);
-      console.log(`   ${w.address}`);
-      wallets.push(w);
-    } catch (err: any) {
-      console.error(`   ❌ Invalid PK: ${err.message}`);
-      process.exit(1);
-    }
+    const w = new ethers.Wallet(pk, provider);
+    console.log(`   ${w.address}`);
+    wallets.push(w);
   }
+  console.log();
 
-  // Fetch tier data (auto from site)
+  // Fetch tier data once
   let tierData: TierData;
   try {
     tierData = await fetchTierData();
@@ -318,21 +307,14 @@ async function main() {
   // Resolve CAMEL contract address
   let camelAddress = CONFIG.CAMEL_ADDRESS;
   if (!camelAddress) {
-    // Try to extract from bundle
-    console.log("\n🔍 Resolving CAMEL contract address from source...");
     try {
       const bundle = await fetch(
         "https://camelcabal.fun/assets/index-8254a56c.js"
       ).then((r) => r.text());
-
-      const match = bundle.match(/camel\s*:\s*e\.([a-zA-Z0-9_$]+)\|\|"(0x[a-fA-F0-9]{40})"/);
-      if (match) {
-        camelAddress = match[2];
-      } else {
-        // Try another pattern
-        const addrMatch = bundle.match(/"camel"\s*:\s*"(0x[a-fA-F0-9]{40})"/);
-        if (addrMatch) camelAddress = addrMatch[1];
-      }
+      const match =
+        bundle.match(/camel\s*:\s*e\.[a-zA-Z0-9_$]+\|\|"(0x[a-fA-F0-9]{40})"/) ??
+        bundle.match(/"camel"\s*:\s*"(0x[a-fA-F0-9]{40})"/);
+      if (match) camelAddress = match[1];
     } catch {}
   }
 
@@ -343,58 +325,58 @@ async function main() {
     );
     process.exit(1);
   }
-  console.log(`   ✅ CAMEL contract: ${camelAddress}`);
+  console.log(`   ✅ CAMEL: ${camelAddress}\n`);
+
+  // Get gas settings once
+  const gasSettings = await getGasSettings(provider);
+  console.log();
 
   // ============================================================
-  // Process each wallet
+  // ALL WALLETS FIRE IN PARALLEL
   // ============================================================
-  const results: Record<
-    string,
-    { success: boolean; reason?: string }
-  > = {};
+  console.log("🚀 Firing all wallets in parallel...\n");
 
-  for (const wallet of wallets) {
-    const camel = new ethers.Contract(camelAddress, CAMEL_ABI, wallet);
-    results[wallet.address] = await mintForWallet(wallet, tierData, camel);
+  const camel = (address: string) =>
+    new ethers.Contract(address, CAMEL_ABI, provider);
 
-    // Small delay between txs to avoid nonce conflicts
-    if (wallet !== wallets[wallets.length - 1]) {
-      await new Promise((r) => setTimeout(r, 2000));
-    }
-  }
+  const results = await Promise.all(
+    wallets.map((w) => mintForWallet(w, tierData, camel(camelAddress), gasSettings))
+  );
 
   // ============================================================
   // Summary
   // ============================================================
-  console.log("\n\n" + "=".repeat(50));
+  console.log("\n" + "=".repeat(52));
   console.log("📊 RESULTS");
-  console.log("=".repeat(50));
+  console.log("=".repeat(52));
 
-  let claimed = 0,
-    skipped = 0,
-    failed = 0,
-    notWL = 0;
+  let claimed = 0, skipped = 0, failed = 0, notWL = 0, notLive = 0;
 
-  for (const [addr, result] of Object.entries(results)) {
-    const short = addr.slice(0, 6) + "..." + addr.slice(-4);
-    if (result.success) {
-      if (result.reason === "already_claimed") {
+  for (const r of results) {
+    const short = r.address.slice(0, 6) + "..." + r.address.slice(-4);
+    if (r.success) {
+      if (r.reason === "already_claimed") {
         console.log(`   ⏭️  ${short} — already claimed`);
         skipped++;
       } else {
-        console.log(`   ✅ ${short} — minted!`);
+        console.log(`   ✅ ${short} — minted! (tx: ${r.txHash?.slice(0, 10)}...)`);
         claimed++;
       }
-    } else if (result.reason === "not_whitelisted") {
+    } else if (r.reason === "not_whitelisted") {
       console.log(`   🚫 ${short} — not on WL`);
       notWL++;
+    } else if (r.reason === "mint_not_live") {
+      console.log(`   ⏳ ${short} — mint not live yet`);
+      notLive++;
     } else {
-      console.log(`   ❌ ${short} — ${result.reason}`);
+      console.log(`   ❌ ${short} — ${r.reason}`);
       failed++;
     }
   }
 
-  console.log(`\n   Claimed: ${claimed} | Already-claimed: ${skipped} | Not-WL: ${notWL} | Failed: ${failed}`);
+  console.log(
+    `\n   Claimed: ${claimed} | Already-claimed: ${skipped} | Not-WL: ${notWL} | Not-live: ${notLive} | Failed: ${failed}`
+  );
   console.log("\n");
 }
 
