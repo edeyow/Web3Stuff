@@ -1,33 +1,26 @@
 // ============================================================
 // CAMEL Phase 1 WL Mint Config
-// Fill in the values once tier data is published
+// Only RPC + private keys needed. Everything else is auto-fetched.
 // ============================================================
 
 export const CONFIG = {
-  // CAMEL contract address on Ethereum mainnet
-  // TODO: Fill in once deployed (check etherscan after launch)
-  CAMEL_ADDRESS: "0x0000000000000000000000000000000000000000",
-
-  // Your wallet private key (keep this secret!)
-  PRIVATE_KEY: "0x_your_private_key_here",
-
-  // RPC endpoint (Alchemy recommended for mainnet)
+  // Alchemy mainnet URL
   RPC_URL: "https://eth-mainnet.g.alchemy.com/v2/YOUR_ALCHEMY_KEY",
 
-  // ============================================================
-  // TIER DATA — fill these from the published tier JSON files
-  // They drop at: /data/camel-tier-0-<hash>.js and camel-tier-1-<hash>.js
-  // ============================================================
-  TIER: {
-    // Merkle root from the tier JSON file
-    merkleRoot: "0x_your_merkle_root_from_tier_data",
+  // Comma-separated private keys (or array of hex strings)
+  // Supports multiple wallets — each will be checked against WL
+  PRIVATE_KEYS: [
+    "0x_your_private_key_1",
+    "0x_your_private_key_2",
+    // add more keys here...
+  ],
 
-    // Your slot number (0 = tier 0, 1 = tier 1)
-    slot: 1,
+  // CAMEL contract address (auto-fetched from source if not set)
+  CAMEL_ADDRESS: "",
 
-    // Whitelist addresses from tier data
-    whitelistAddresses: [
-      // "0x..."
-    ],
-  },
+  // Auto-fetch tier data from camelcabal.fun (only works after tier drop)
+  TIER_FETCH_URL: "https://camelcabal.fun/data/",
+
+  // Gas settings (leave auto for now)
+  GAS_LIMIT: 200000,
 };
